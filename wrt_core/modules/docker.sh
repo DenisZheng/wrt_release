@@ -77,6 +77,58 @@ _docker_stack_normalize_build_dir() {
     fi
 }
 
+
+_docker_stack_resolve_config_file() {
+    local build_dir="$1"
+    local candidate=""
+
+    if [ -n "${DOCKER_STACK_CONFIG_FILE:-}" ]; then
+        if [ -f "${DOCKER_STACK_CONFIG_FILE}" ]; then
+            echo "${DOCKER_STACK_CONFIG_FILE}"
+            return 0
+        fi
+
+        echo "警告：DOCKER_STACK_CONFIG_FILE 已设置但文件不存在: ${DOCKER_STACK_CONFIG_FILE}" >&2
+    fi
+
+    for candidate in \
+        "$build_dir/.config" \
+        "$DOCKER_STACK_REPO_ROOT/.config"; do
+        [ -f "$candidate" ] && {
+            echo "$candidate"
+            return 0
+        }
+    done
+
+    return 1
+}
+
+_docker_stack_config_enables_docker() {
+    local config_file="$1"
+
+    grep -Eq '^CONFIG_PACKAGE_(dockerd|docker|docker-compose|luci-app-dockerman|luci-i18n-dockerman-[^=]+)=(y|m)$' "$config_file"
+}
+
+_docker_stack_should_process() {
+    local build_dir="$1"
+    local config_file=""
+
+    config_file=$(_docker_stack_resolve_config_file "$build_dir" || true)
+
+    if [ -z "$config_file" ]; then
+        echo "警告：未找到 .config，无法判断 Docker 是否启用，继续执行 Docker 相关组件处理" >&2
+        return 0
+    fi
+
+    if _docker_stack_config_enables_docker "$config_file"; then
+        echo "检测到 Docker/Dockerman 已启用，继续执行 Docker 相关组件处理: $config_file"
+        return 0
+    fi
+
+    echo "Docker/Dockerman 未启用，跳过 Docker 相关组件版本处理: $config_file"
+    return 1
+}
+
 _docker_stack_validate_project() {
     local project_dir="$1"
     local component
@@ -1148,6 +1200,11 @@ update_docker_stack() {
     fi
 
     build_dir=$(_docker_stack_normalize_build_dir "$build_dir")
+
+    if ! _docker_stack_should_process "$build_dir"; then
+        return 0
+    fi
+
     _docker_stack_validate_project "$build_dir" || return 1
 
     runc_makefile=$(_docker_stack_resolve_component_makefile "$build_dir" "runc") || return 1
